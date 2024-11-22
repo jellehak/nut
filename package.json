@@ -1,0 +1,22 @@
+{
+  "name": "agentica",
+  "version": "0.0.1",
+  "description": "command line tool that recursively solves a complex problem.",
+  "main": "cli.js",
+  "bin": {
+    "agentica": "./cli.js"
+  },
+  "type": "module",
+  "scripts": {
+  },
+  "keywords": [],
+  "author": "Jelle",
+  "license": "ISC",
+  "dependencies": {
+    "ai": "^4.0.3",
+    "cli-progress": "^3.12.0",
+    "commander": "^12.1.0",
+    "glob": "^11.0.0",
+    "ollama-ai-provider": "^0.16.1"
+  }
+}
