@@ -5,7 +5,6 @@ import { createOllama } from 'ollama-ai-provider'
 import { glob } from 'glob'
 import { Command } from 'commander'
 import cliProgress from 'cli-progress'
-import { MarkdownParser } from "./parser.js"
 import _colors from "ansi-colors"
 import { createDeepPath, runTaskStreaming } from './lib.js'
 
@@ -33,6 +32,19 @@ class FakeBar {
     }
 }
 
+function getFiles(options = {}) {
+    if (options.input) {
+        return glob.sync(options.input, { ignore: 'node_modules/**' })
+    }
+    if (options.files) {
+        const content = fs.readFileSync(options.files, 'utf8')
+        const files = content.split('\n').filter(Boolean)
+        return files
+    }
+    // Create single empty task
+    return []
+}
+
 // Initialize commander
 const program = new Command()
 
@@ -42,15 +54,15 @@ program
 
 program.command('do')
     .argument('<string>', 'prompt')
-    .option('-o, --output <folder>', 'output folder', '')
+    .option('-o, --output <folder>', 'output folder', './')
     .option('-i, --input <pattern>', 'input file glob pattern', '')
     .option('-f, --files <path>', 'list of files', '')
     .option('-p, --progress', 'progress', false)
-    .option('-m, --model <name>', 'model name', 'codegemma:7b')
+    .option('-m, --model <name>', 'model name', 'llama3.1')
     .option('-v, --verbose', 'verbose', false)
     .option('-l, --log <path>', 'log pipe', false)
     .option('-s, --skip', 'skip existing files. only write new files.', false)
-    .action(async (str, options) => {
+    .action(async (task, options) => {
 
         // const options = program.opts()
 
@@ -66,25 +78,13 @@ program.command('do')
         })
         const model = ollama(options.model)
 
-        const task = process.argv[2]
+        // Get files
+        const files = await getFiles(options)
 
-        const files = await getFiles()
-
-        function getFiles() {
-            if (options.input) {
-                return glob.sync(options.input, { ignore: 'node_modules/**' })
-            }
-            if (options.files) {
-                const content = fs.readFileSync(options.files, 'utf8')
-                const files = content.split('\n').filter(Boolean)
-                // console.log(files)
-                return files
-            }
-        }
-
-        const tasks = files.map((file) => {
+        // Create tasks (from files)
+        const tasks = files.length ? files.map((file) => {
             return { file, prompt: task }
-        })
+        }) : [{ prompt: task }]
 
         if (options.output) {
             if (!fs.existsSync(options.output)) {
@@ -93,22 +93,8 @@ program.command('do')
         }
 
         if (!tasks.length) {
-            console.log('No files found')
+            console.log('No tasks found')
             process.exit(0)
-        }
-
-        async function runTasksInSeries(tasks = []) {
-            for (const fn of tasks) {
-                await fn()
-            }
-        }
-
-        function myFormatter(options, params, payload) {
-            // bar grows dynamically by current progrss - no whitespaces are added
-            const bar = options.barCompleteString.substr(0, Math.round(params.progress * options.barsize));
-
-            const colorFn = params.value >= params.total ? _colors.green : _colors.yellow;
-            return `# ${payload.task} ${payload.filename} ${params.value >= params.total ? colorFn(params.value + '/' + params.total) : colorFn(params.value + '/' + params.total)} --[${bar}]-- `;
         }
 
         const realBar = new cliProgress.MultiBar({
@@ -122,6 +108,9 @@ program.command('do')
 
         console.log(`Using model: ${options.model}`)
         console.log(`Work divided over ${tasks.length} tasks`)
+        if (options.log) {
+            console.log(`using log file: ${options.log}`)
+        }
 
         const main = multibar.create(tasks.length, 0, {
             filename: 'All tasks',
@@ -143,19 +132,28 @@ program.command('do')
                 multibar,
                 output: options.output,
             })
+            logStream.write(`\n\n`)
+
             main.increment()
         })
         await runTasksInSeries(tasksFn)
 
         multibar.stop()
         console.log('All Done')
-    });
+    })
 
+async function runTasksInSeries(tasks = []) {
+    for (const fn of tasks) {
+        await fn()
+    }
+}
+
+// replay command    
 program.command('replay')
     .description('replay a log')
     .argument('<string>', 'log file')
     .action((str, options) => {
         console.log(str)
-    });
+    })
 
 program.parse(process.argv)
