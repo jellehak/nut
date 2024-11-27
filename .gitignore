@@ -1,3 +1,5 @@
 .local
 .todo
 node_modules
+build
+.cache
