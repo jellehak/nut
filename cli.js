@@ -6,68 +6,8 @@ import { glob } from 'glob'
 import { Command } from 'commander'
 import cliProgress from 'cli-progress'
 import { MarkdownParser } from "./parser.js"
-
-// Initialize commander
-const program = new Command()
-program
-    .argument('<string>', 'prompt')
-    .option('-o, --output <folder>', 'output folder', '')
-    .option('-i, --input <pattern>', 'input file glob pattern', '**/*.jsx')
-    .option('-p, --progress', 'progress', false)
-    .option('-m, --model <name>', 'model name', 'codegemma:7b')
-    .option('-v, --verbose', 'verbose', false)
-    .option('-l, --log <path>', 'log pipe', false)
-    .option('-s, --skip', 'skip existing files. only write new files.', false)
-    .parse(process.argv)
-
-const options = program.opts()
-
-// Set Model
-const ollama = createOllama({
-    fetch: async (url, options) => {
-        const body = JSON.parse(options.body)
-        body.options['num_ctx'] = 32 * 1024
-        options.body = JSON.stringify(body)
-        const result = await fetch(url, options)
-        return result
-    },
-})
-const model = ollama(options.model)
-
-const task = process.argv[2]
-
-const files = await glob(options.input, { ignore: 'node_modules/**' })
-
-const tasks = files.map((file) => {
-    return { file, prompt: task }
-})
-
-if (options.output) {
-    if (!fs.existsSync(options.output)) {
-        fs.mkdirSync(options.output, { recursive: true })
-    }
-}
-
-if (options.verbose) {
-    console.log({
-        task,
-        options,
-        tasks,
-        glob: options.input,
-        files
-    })
-}
-
-if (!tasks.length) {
-    console.log('No files found')
-    process.exit(0)
-}
-
-async function runTasksInSeries(tasks = []) {
-    for (const fn of tasks) {
-        await fn()
-    }
-}
+import _colors from "ansi-colors"
+import { createDeepPath, runTaskStreaming } from './lib.js'
 
 class FakeBar {
     constructor() {
@@ -93,124 +33,129 @@ class FakeBar {
     }
 }
 
-const realBar = new cliProgress.MultiBar({
-    autopadding: true,
-    format: ' {bar} | ETA: {eta_formatted}\t | {value}/{total}\t | {duration_formatted} | {task}\t | {filename}\t ',
-}, cliProgress.Presets.shades_classic)
+// Initialize commander
+const program = new Command()
 
-const multibar = options.progress ? realBar : new FakeBar
+program
+    .name('nut')
+    .description('command line tool that recursively solves a complex problem.')
 
-console.log(`Using model: ${options.model}`)
-console.log(`Work divided over ${tasks.length} tasks`)
+program.command('do')
+    .argument('<string>', 'prompt')
+    .option('-o, --output <folder>', 'output folder', '')
+    .option('-i, --input <pattern>', 'input file glob pattern', '')
+    .option('-f, --files <path>', 'list of files', '')
+    .option('-p, --progress', 'progress', false)
+    .option('-m, --model <name>', 'model name', 'codegemma:7b')
+    .option('-v, --verbose', 'verbose', false)
+    .option('-l, --log <path>', 'log pipe', false)
+    .option('-s, --skip', 'skip existing files. only write new files.', false)
+    .action(async (str, options) => {
 
-const main = multibar.create(tasks.length, 0, {
-    filename: 'All tasks',
-    task: '\t',
-})
+        // const options = program.opts()
 
-const logStream = options.log ? fs.createWriteStream(options.log) : { write: () => { } }
+        // Set Model
+        const ollama = createOllama({
+            fetch: async (url, options) => {
+                const body = JSON.parse(options.body)
+                body.options['num_ctx'] = 32 * 1024
+                options.body = JSON.stringify(body)
+                const result = await fetch(url, options)
+                return result
+            },
+        })
+        const model = ollama(options.model)
 
-const tasksFn = tasks.map(task => async () => {
-    await runTaskStreaming(task, { logStream })
-    main.increment()
-})
-await runTasksInSeries(tasksFn)
+        const task = process.argv[2]
 
-multibar.stop()
-console.log('All Done')
+        const files = await getFiles()
 
-function createPrompt(task = {}, data = '') {
-    const prompt = `
-## Task
-${task.prompt}
-
-***${task.file}***
-\`\`\`
-${data}
-\`\`\`
-    `
-    return { prompt }
-}
-
-async function runTaskStreaming(task = {}, { logStream = { write: (str = '') => { } } }) {
-    const data = fs.readFileSync(task.file, 'utf8')
-
-    const { prompt } = createPrompt(task, data)
-
-    logStream.write(`# Prompt\n${prompt}\n\n\n`)
-
-    const { textStream } = streamText({
-        model,
-        prompt,
-    })
-
-    const guessedTotalChunks = Math.ceil(data.length / 3)
-
-    let writeStream
-    const parser = new MarkdownParser()
-
-    const inputTaskBar = multibar.create(guessedTotalChunks, 0, {
-        filename: task.file,
-        task: 'scanning',
-    })
-
-    logStream.write(`# Response\n`)
-
-    let buffer = ''
-
-    function handleLine(line = '') {
-        const resp = parser.parseLine(line)
-
-        if (resp.type === 'strong') {
-            const path = resp.node?.text
-            const toPath = `${options.output}${path}`
-
-            if (options.output) {
-                if (!fs.existsSync(toPath)) {
-                    const path = toPath
-                        .split('/')
-                        .slice(0, -1)
-                        .join('/')
-                    if (path) {
-                        fs.mkdirSync(path, { recursive: true })
-                    }
-                }
+        function getFiles() {
+            if (options.input) {
+                return glob.sync(options.input, { ignore: 'node_modules/**' })
             }
-
-            logStream.write(`<!-- Writing to: ${toPath} -->\n`)
-
-            writeStream = options.output ? fs.createWriteStream(toPath) : process.stdout
+            if (options.files) {
+                const content = fs.readFileSync(options.files, 'utf8')
+                const files = content.split('\n').filter(Boolean)
+                // console.log(files)
+                return files
+            }
         }
 
-        if (resp.type === 'codeBlockLine') {
-            writeStream?.write(resp.content)
+        const tasks = files.map((file) => {
+            return { file, prompt: task }
+        })
+
+        if (options.output) {
+            if (!fs.existsSync(options.output)) {
+                fs.mkdirSync(options.output, { recursive: true })
+            }
         }
 
-        inputTaskBar.increment()
-    }
-
-    for await (const textPart of textStream) {
-        logStream.write(textPart)
-
-        buffer += textPart
-
-        let newlineIndex
-        while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.slice(0, newlineIndex)
-            buffer = buffer.slice(newlineIndex + 1)
-
-            handleLine(line)
+        if (!tasks.length) {
+            console.log('No files found')
+            process.exit(0)
         }
-    }
 
-    inputTaskBar.update(guessedTotalChunks)
-    inputTaskBar.stop()
+        async function runTasksInSeries(tasks = []) {
+            for (const fn of tasks) {
+                await fn()
+            }
+        }
 
-    if (writeStream) {
-        writeStream.end()
-    }
+        function myFormatter(options, params, payload) {
+            // bar grows dynamically by current progrss - no whitespaces are added
+            const bar = options.barCompleteString.substr(0, Math.round(params.progress * options.barsize));
 
-    return {
-        task,
-    }
-}
+            const colorFn = params.value >= params.total ? _colors.green : _colors.yellow;
+            return `# ${payload.task} ${payload.filename} ${params.value >= params.total ? colorFn(params.value + '/' + params.total) : colorFn(params.value + '/' + params.total)} --[${bar}]-- `;
+        }
+
+        const realBar = new cliProgress.MultiBar({
+            hideCursor: true,
+            format: ' {bar} | ETA: {eta_formatted} | {value}/{total} | {duration_formatted} | {task} | {filename} ',
+            autopadding: true,
+            stopOnComplete: true,
+        }, cliProgress.Presets.shades_classic)
+
+        const multibar = options.progress ? realBar : new FakeBar
+
+        console.log(`Using model: ${options.model}`)
+        console.log(`Work divided over ${tasks.length} tasks`)
+
+        const main = multibar.create(tasks.length, 0, {
+            filename: 'All tasks',
+            task: '\t',
+        })
+
+        // Log to file?
+        if (options.log) {
+            createDeepPath(options.log)
+        }
+        const logStream = options.log ? fs.createWriteStream(options.log) : { write: () => { } }
+
+        const tasksFn = tasks.map((task, index) => async () => {
+            logStream.write(`# Task ${index}\n`)
+
+            await runTaskStreaming(task, {
+                logStream,
+                model,
+                multibar,
+                output: options.output,
+            })
+            main.increment()
+        })
+        await runTasksInSeries(tasksFn)
+
+        multibar.stop()
+        console.log('All Done')
+    });
+
+program.command('replay')
+    .description('replay a log')
+    .argument('<string>', 'log file')
+    .action((str, options) => {
+        console.log(str)
+    });
+
+program.parse(process.argv)

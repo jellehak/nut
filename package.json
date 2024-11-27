@@ -7,13 +7,13 @@
     "agentica": "./cli.js"
   },
   "type": "module",
-  "scripts": {
-  },
+  "scripts": {},
   "keywords": [],
   "author": "Jelle",
   "license": "ISC",
   "dependencies": {
     "ai": "^4.0.3",
+    "ansi-colors": "^4.1.3",
     "cli-progress": "^3.12.0",
     "commander": "^12.1.0",
     "glob": "^11.0.0",
