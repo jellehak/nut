@@ -7,16 +7,16 @@ import cliProgress from 'cli-progress'
 import { MarkdownParser } from "./parser.js"
 import _colors from "ansi-colors"
 
-function createPrompt(task = {}, data = '') {
-    const extension = task.file.split('.').pop()
+function createPrompt(task = {}, context = {}) {
+    const _context = context.files.map(renderFile).join('\n')
+
     const prompt = `
-## Task
+### Intend
 ${task.prompt}
 
-***${task.file}***
-\`\`\`${extension}
-${data}
-\`\`\`
+> put filename above codeblock as a strong tag e.g. ***file.js***
+
+${_context}
     `
     return { prompt }
 }
@@ -39,18 +39,51 @@ const OPTIONS = {
     model: null,
     multibar: {},
 }
+
+function renderFile({file = '', content = ''}) {
+    const extension = file.split('.').pop()
+
+    return `***${file}***
+\`\`\`${extension}
+${content}
+\`\`\``
+}
+
+function taskContextLoader(task = {}) {
+    if(task.file) {
+        return {
+            files: [
+                {
+                    file: task.file,
+                    content: fs.readFileSync(task.file, 'utf8')
+                }
+            ]
+        }
+    }
+    return {
+        files: []
+    }
+}
+
+function guessTotalChunks(task = {}, context = {}) {
+    if(context.files.length) {
+        return Math.ceil(context.files[0].content / 3)
+    }
+    return 1
+}
+
 export async function runTaskStreaming(task = {}, options = OPTIONS) {
-    const { 
+    const {
         logStream,
         model,
         multibar,
         output
-     } = { ...OPTIONS, ...options}
-// console.log(options)
+    } = { ...OPTIONS, ...options }
 
-    const data = fs.readFileSync(task.file, 'utf8')
+    // Context loader
+    const context = taskContextLoader(task)
 
-    const { prompt } = createPrompt(task, data)
+    const { prompt } = createPrompt(task, context)
 
     logStream.write(`## Prompt\n${prompt}\n\n\n`)
 
@@ -59,7 +92,8 @@ export async function runTaskStreaming(task = {}, options = OPTIONS) {
         prompt,
     })
 
-    const guessedTotalChunks = Math.ceil(data.length / 3)
+    // Detect total chunks
+    const guessedTotalChunks = guessTotalChunks(task, context)
 
     let writeStream = null
     const parser = new MarkdownParser()
