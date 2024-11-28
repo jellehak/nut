@@ -1,9 +1,5 @@
 import fs from 'node:fs'
-import { generateText, streamText, tool } from "ai"
-import { createOllama } from 'ollama-ai-provider'
-import { glob } from 'glob'
-import { Command } from 'commander'
-import cliProgress from 'cli-progress'
+import { streamText } from "ai"
 import { MarkdownParser } from "./parser.js"
 import _colors from "ansi-colors"
 
@@ -14,10 +10,9 @@ function createPrompt(task = {}, context = {}) {
 ### Intend
 ${task.prompt}
 
-> put filename above codeblock as a strong tag e.g. ***file.js***
+> IMPORTANT: put filename above codeblock as a strong tag e.g. ***file.js***
 
-${_context}
-    `
+${_context}`
     return { prompt }
 }
 
@@ -31,13 +26,6 @@ export function createDeepPath(toPath = '') {
     if (path) {
         fs.mkdirSync(path, { recursive: true })
     }
-}
-
-const OPTIONS = {
-    logStream: { write: (str = '') => { } },
-    /** @type LanguageModelV1 */
-    model: null,
-    multibar: {},
 }
 
 function renderFile({file = '', content = ''}) {
@@ -72,9 +60,17 @@ function guessTotalChunks(task = {}, context = {}) {
     return 1
 }
 
+const OPTIONS = {
+    logStream: { write: (str = '') => { } },
+    model: null,
+    multibar: {},
+    output: '',
+}
+
 export async function runTaskStreaming(task = {}, options = OPTIONS) {
     const {
         logStream,
+        tick,
         model,
         multibar,
         output
@@ -108,9 +104,11 @@ export async function runTaskStreaming(task = {}, options = OPTIONS) {
     function handleLine(line = '') {
         const resp = parser.parseLine(line)
 
-        const isFile = resp.type === 'strong' && resp.node?.text.includes('.')
+        tick(resp, line)
+
+        const isFile = resp.type === 'strong' && resp.content.includes('.')
         if (isFile) {
-            const path = resp.node?.text
+            const path = resp.content
             const toPath = `${output}${path}`
 
             // Create Path
@@ -129,7 +127,7 @@ export async function runTaskStreaming(task = {}, options = OPTIONS) {
             if (!writeStream) {
                 logStream.write(`<!-- dropped code -->\n`)
             }
-            writeStream?.write(resp.content)
+            writeStream?.write(`${resp.content}\n`)
         }
 
         if (resp.type === 'codeBlockEnd') {
@@ -150,7 +148,7 @@ export async function runTaskStreaming(task = {}, options = OPTIONS) {
             const line = buffer.slice(0, newlineIndex)
             buffer = buffer.slice(newlineIndex + 1)
 
-            handleLine(`${line}\n`)
+            handleLine(`${line}`)
         }
     }
 

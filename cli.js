@@ -60,6 +60,7 @@ program.command('do')
     .option('-p, --progress', 'progress', false)
     .option('-m, --model <name>', 'model name', 'llama3.1')
     .option('-v, --verbose', 'verbose', false)
+    .option('-d, --debug', 'debug log level', false)
     .option('-l, --log <path>', 'log pipe', false)
     .option('-s, --skip', 'skip existing files. only write new files.', false)
     .action(async (task, options) => {
@@ -111,6 +112,8 @@ program.command('do')
         if (options.log) {
             console.log(`using log file: ${options.log}`)
         }
+        console.log(`===\n`)
+
 
         const main = multibar.create(tasks.length, 0, {
             filename: 'All tasks',
@@ -121,13 +124,49 @@ program.command('do')
         if (options.log) {
             createDeepPath(options.log)
         }
-        const logStream = options.log ? fs.createWriteStream(options.log) : { write: () => { } }
+        const logStream = options.log ? fs.createWriteStream(options.log) : { write: (str) => { } }
+        const niceLogStream = process.stdout
 
         const tasksFn = tasks.map((task, index) => async () => {
             logStream.write(`# Task ${index}\n`)
 
             await runTaskStreaming(task, {
                 logStream,
+                tick(ctx, raw) {
+                    if(options.debug) {
+                        console.log(ctx)
+                        // process.stdout.write(`${ctx.type}\t${ctx.content || '-'}\n`)
+                        return
+                    }
+                    if(options.verbose) {
+                        // process.stdout.write(`${ctx.type}\t${ctx.content || '-'}\n`)
+                        process.stdout.write(`${raw}\n`)
+                        return
+                    }
+                             
+                    if(ctx.type === 'paragraph') {
+                        niceLogStream.write(`\t${ctx.content}\n`)
+                        return
+                    }
+                    if(ctx.type === 'codeBlockLine') {
+                        niceLogStream.write(`.`)
+                        return
+                    }
+                    if(ctx.type === 'codeBlockEnd') {
+                        niceLogStream.write(`done\n`)
+                        return
+                    }
+
+                    const isFile = ctx.type === 'strong' && ctx.content.includes('.')
+                    if(isFile) {
+                        niceLogStream.write(ctx.content)
+                        return
+                    }
+                    
+                    if(ctx.content) {
+                        niceLogStream.write(`${ctx.content || ''}\n`)
+                    }
+                },
                 model,
                 multibar,
                 output: options.output,
@@ -139,6 +178,7 @@ program.command('do')
         await runTasksInSeries(tasksFn)
 
         multibar.stop()
+        console.log(``)
         console.log('All Done')
     })
 

@@ -4,7 +4,7 @@ export class MarkdownParser {
         this.currentCodeBlock = null; // Tracks the current code block node
     }
 
-    parseLine(line) {
+    parseLine(line = '') {
         // Handle code block ending
         if (this.isCodeBlock) {
             if (line.startsWith("```")) {
@@ -30,14 +30,14 @@ export class MarkdownParser {
         // Heading
         if (line.startsWith("#")) {
             const level = line.match(/^#+/)[0].length; // Count '#' for level
-            const text = line.slice(level).trim();
-            return { type: "heading", node: { type: "heading", level, text } };
+            const content = line.slice(level).trim();
+            return { type: "heading", level, content };
         }
 
         // Unordered list item
         if (line.startsWith("- ")) {
-            const text = this.processInlineElements(line.slice(2).trim());
-            return { type: "listItem", node: { type: "listItem", text } };
+            const content = this.processInlineElements(line.slice(2).trim());
+            return { type: "listItem", content };
         }
 
         // Blank line
@@ -49,29 +49,29 @@ export class MarkdownParser {
         const boldItalicMatch = line.trim().match(/^\*\*\*(.+?)\*\*\*$/);
         if (boldItalicMatch) {
             const content = boldItalicMatch[1];
-            return { type: "strong", node: { type: "strong", text: content } };
+            return { type: "strong", content };
         }
 
         // Strong element on a single line
         const strongMatch = line.trim().match(/^\*\*(.+?)\*\*$/);
         if (strongMatch) {
             const content = strongMatch[1];
-            return { type: "strong", node: { type: "strong", text: content } };
+            return { type: "strong", content };
         }
 
         // Paragraph
-        const text = this.processInlineElements(line.trim());
-        return { type: "paragraph", node: { type: "paragraph", text } };
+        const content = this.processInlineElements(line.trim());
+        return { type: "paragraph", content };
     }
 
     processInlineElements(text) {
         // Replace strong elements (**text**)
         return text.replace(/\*\*(.+?)\*\*/g, (_, content) => {
-            return JSON.stringify({ type: "strong", text: content });
+            return JSON.stringify({ type: "strong", content });
         });
     }
 
-    parse(markdown) {
+    parse(markdown = "") {
         const lines = markdown.split("\n");
         const ast = [];
         let currentList = null;
