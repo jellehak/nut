@@ -2,17 +2,41 @@ import fs from 'node:fs'
 import { streamText } from "ai"
 import { MarkdownParser } from "./parser.js"
 import _colors from "ansi-colors"
+import { createOllama } from 'ollama-ai-provider'
+import { openai } from '@ai-sdk/openai';
 
-function createPrompt(task = {}, context = {}) {
-    const _context = context.files.map(renderFile).join('\n')
+const model = openai('o1-mini')
 
+function loadFileContent(file = '') {
+    return {
+        file,
+        content: fs.readFileSync(file, 'utf8')
+    }
+}
+export class Task {
+    prompt = ''
+    intend = ''
+    files = []
+
+    constructor(obj = {}) {
+        Object.assign(this, obj)
+    }
+    get context() {
+        return this.files
+            .map(loadFileContent)
+            .map(renderFile)
+            .join('\n')
+    }
+}
+
+function createPrompt(task = new Task) {
     const prompt = `
 ### Intend
 ${task.prompt}
 
 > IMPORTANT: put filename above codeblock as a strong tag e.g. ***file.js***
 
-${_context}`
+${task.context}`
     return { prompt }
 }
 
@@ -28,7 +52,22 @@ export function createDeepPath(toPath = '') {
     }
 }
 
-function renderFile({file = '', content = ''}) {
+export function createOllamaModel(options = {}) {
+    // Set Model
+    const ollama = createOllama({
+        // Add custom fetch to allow larger context window
+        fetch: async (url, options) => {
+            const body = JSON.parse(options.body)
+            body.options['num_ctx'] = 32 * 1024
+            options.body = JSON.stringify(body)
+            const result = await fetch(url, options)
+            return result
+        },
+    })
+    return ollama(options.model)
+}
+
+function renderFile({ file = '', content = '' }) {
     const extension = file.split('.').pop()
 
     return `***${file}***
@@ -37,67 +76,53 @@ ${content}
 \`\`\``
 }
 
-function taskContextLoader(task = {}) {
-    if(task.file) {
-        return {
-            files: [
-                {
-                    file: task.file,
-                    content: fs.readFileSync(task.file, 'utf8')
-                }
-            ]
-        }
-    }
-    return {
-        files: []
-    }
-}
-
-function guessTotalChunks(task = {}, context = {}) {
-    if(context.files.length) {
-        return Math.ceil(context.files[0].content / 3)
-    }
-    return 1
-}
-
+const ollama = createOllama()
 const OPTIONS = {
     logStream: { write: (str = '') => { } },
-    model: null,
+    model: ollama('llama3.1'),
     multibar: {},
+    tick: (ctx, raw) => { },
     output: '',
+    createWriteStream: fs.createWriteStream
 }
 
+export async function runTasksInSeries(tasks = []) {
+    for (const fn of tasks) {
+        await fn()
+    }
+}
+
+/**
+ * 
+ * @param {*} task 
+ * @param {*} options 
+ * @returns 
+ */
 export async function runTaskStreaming(task = {}, options = OPTIONS) {
     const {
         logStream,
         tick,
         model,
-        multibar,
-        output
+        // output,
+        createWriteStream
     } = { ...OPTIONS, ...options }
 
     // Context loader
-    const context = taskContextLoader(task)
+    // const context = taskContextLoader(task)
 
-    const { prompt } = createPrompt(task, context)
+    const { prompt } = createPrompt(task)
 
     logStream.write(`## Prompt\n${prompt}\n\n\n`)
 
+    // TODO catch errors
     const { textStream } = streamText({
         model,
         prompt,
+        maxRetries: 1
     })
-
-    // Detect total chunks
-    const guessedTotalChunks = guessTotalChunks(task, context)
 
     let writeStream = null
     const parser = new MarkdownParser()
-
-    const inputTaskBar = multibar.create(guessedTotalChunks, 0, {
-        filename: task.file,
-        task: 'scanning',
-    })
 
     logStream.write(`## Response\n`)
 
@@ -106,26 +131,24 @@ export async function runTaskStreaming(task = {}, options = OPTIONS) {
 
         tick(resp, line)
 
-        const isFile = resp.type === 'strong' && resp.content.includes('.')
+        const isFile = resp.type === 'boldItalic' && resp.content.includes('.')
+        // console.log(resp)
         if (isFile) {
             const path = resp.content
-            const toPath = `${output}${path}`
+            const toPath = `${path}`
 
             // Create Path
-            if (output) {
-                createDeepPath(toPath)
-            }
+            createDeepPath(toPath)
 
             logStream.write(`<!-- Writing to: ${toPath} -->\n`)
 
-            inputTaskBar.update({ filename: toPath, task: 'writing' })
             // Update writeStream
-            writeStream = output ? fs.createWriteStream(toPath) : process.stdout
+            writeStream = createWriteStream(toPath)
         }
 
         if (resp.type === 'codeBlockLine') {
             if (!writeStream) {
-                logStream.write(`<!-- dropped code -->\n`)
+                logStream.write(`<!-- no writeStream => dropped code -->\n`)
             }
             writeStream?.write(`${resp.content}\n`)
         }
@@ -134,7 +157,6 @@ export async function runTaskStreaming(task = {}, options = OPTIONS) {
             writeStream = null
         }
 
-        inputTaskBar.increment()
     }
 
     let buffer = ''
@@ -152,14 +174,38 @@ export async function runTaskStreaming(task = {}, options = OPTIONS) {
         }
     }
 
-    inputTaskBar.update(guessedTotalChunks)
-    inputTaskBar.stop()
-
     if (writeStream) {
         writeStream.end()
     }
 
     return {
         task,
+    }
+}
+
+export function createChatHandler(stream) {
+    return (ctx) => {
+        if (ctx.type === 'paragraph') {
+            stream.write(`\t${ctx.content}\n`)
+            return
+        }
+        if (ctx.type === 'codeBlockLine') {
+            stream.write(`.`)
+            return
+        }
+        if (ctx.type === 'codeBlockEnd') {
+            stream.write(`done\n`)
+            return
+        }
+    
+        const isFile = ctx.type === 'strong' && ctx.content.includes('.')
+        if (isFile) {
+            stream.write(ctx.content)
+            return
+        }
+    
+        if (ctx.content) {
+            stream.write(`${ctx.content || ''}\n`)
+        }
     }
 }
