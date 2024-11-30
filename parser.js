@@ -4,6 +4,17 @@ export class MarkdownParser {
         this.currentCodeBlock = null; // Tracks the current code block node
     }
 
+    /**
+     * Checks if a line matches a specific pattern (e.g., a file tag).
+     * @param {string} line - The line to check.
+     * @param {string} tag - The tag to match (e.g., "file").
+     * @returns {boolean} - True if the line matches the tag pattern.
+     */
+    isFileTag(line, tag) {
+        const pattern = new RegExp(`^\\[${tag}\\]:\\s*(.+)$`);
+        return pattern.test(line);
+    }
+
     parseLine(line = '') {
         // Handle code block ending
         if (this.isCodeBlock) {
@@ -34,6 +45,14 @@ export class MarkdownParser {
             return { type: "heading", level, content };
         }
 
+        // Todo list item
+        const todoMatch = line.match(/^- \[([ xX])\] (.+)$/);
+        if (todoMatch) {
+            const isChecked = todoMatch[1].toLowerCase() === "x";
+            const content = this.processInlineElements(todoMatch[2].trim());
+            return { type: "todoItem", isChecked, content };
+        }
+
         // Unordered list item
         if (line.startsWith("- ")) {
             const content = this.processInlineElements(line.slice(2).trim());
@@ -45,11 +64,17 @@ export class MarkdownParser {
             return { type: "blankLine" };
         }
 
+        // Handle file tag
+        if (this.isFileTag(line, "file")) {
+            const filePath = line.match(/^\[file\]:\s*(.+)$/)[1];
+            return { type: "fileTag", path: filePath.trim() };
+        }
+
         // All bold and italic
         const boldItalicMatch = line.trim().match(/^\*\*\*(.+?)\*\*\*$/);
         if (boldItalicMatch) {
             const content = boldItalicMatch[1];
-            return { type: "strong", content };
+            return { type: "boldItalic", content };
         }
 
         // Strong element on a single line
@@ -79,13 +104,13 @@ export class MarkdownParser {
         for (const line of lines) {
             const result = this.parseLine(line);
 
-            // Process returned information
-            if (result.type === "listItem") {
+            // Handle list items
+            if (result.type === "listItem" || result.type === "todoItem") {
                 if (!currentList) {
                     currentList = { type: "list", items: [] };
                     ast.push(currentList);
                 }
-                currentList.items.push(result.node);
+                currentList.items.push(result);
                 continue;
             }
 
@@ -94,23 +119,13 @@ export class MarkdownParser {
                 continue;
             }
 
-            if (result.type === "codeBlockEnd") {
-                // Code block was already pushed; nothing more to do
-                continue;
-            }
-
-            if (result.type === "codeBlockLine") {
-                // Code block content is handled inline; no AST change
-                continue;
-            }
-
-            if (result.type === "blankLine") {
-                // Do nothing for blank lines
-                continue;
-            }
-
             if (currentList) {
                 currentList = null; // End the list context
+            }
+
+            if (result.type === "fileTag") {
+                ast.push(result);
+                continue;
             }
 
             if (result.node) {
@@ -121,25 +136,3 @@ export class MarkdownParser {
         return ast;
     }
 }
-
-// // Example usage
-// const markdown = `
-// # Heading 1
-// This is a **paragraph**.
-
-// - **Item 1**
-// - Item 2
-// - Item **3**
-
-// ## Heading 2
-// Another **paragraph**.
-
-// \`\`\`js
-// console.log("Hello, World!");
-// const x = 42;
-// \`\`\`
-// `;
-
-// const parser = new MarkdownParser();
-// const ast = parser.parse(markdown);
-// console.log(JSON.stringify(ast, null, 2));
