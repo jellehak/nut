@@ -3,7 +3,6 @@ import { streamText } from "ai"
 import { MarkdownParser } from "./parsers/md/parser.js"
 import { createOllama } from 'ollama-ai-provider'
 import { openai } from '@ai-sdk/openai';
-import { StreamingMessageParser } from './parsers/xml/message-parser.js'
 
 const ollama = createOllama()
 
@@ -31,7 +30,7 @@ ${task.prompt}
 > IMPORTANT: put filename above codeblock as a strong tag e.g. ***file.js***
 
 ${task.context}`
-    return { prompt }
+    return prompt
 }
 
 export function createDeepPath(toPath = '') {
@@ -75,7 +74,8 @@ export async function runTaskStreaming(task = new Task, options = new TaskOption
         createWriteStream
     } = { ...new TaskOptions, ...options }
 
-    const prompt = task.prompt
+    // const prompt = task.prompt
+    const prompt = createPrompt(task)
 
     logStream.write(`## Prompt\n${prompt}\n\n\n`)
 
@@ -91,14 +91,47 @@ export async function runTaskStreaming(task = new Task, options = new TaskOption
 
     logStream.write(`## Response\n`)
 
-    function handleLine(line = '') {
-        // Test XML parser
-        const resp = parser.parse('message_1', line)
-        // console.log({line, resp})
-        // MD Parser
-        // const resp = parser.parseLine(line)
+    const _parser = new MarkdownLineParser(options)
 
-        tick(resp, line)
+    let buffer = ''
+    let result = '';
+    for await (const textPart of textStream) {
+        logStream.write(textPart)
+
+        buffer += textPart
+
+        // result += parser.parse('message_1', buffer)
+        // process.stdout.write(textPart)
+
+        buffer = _parser.parse(buffer)
+    }
+
+    if (writeStream) {
+        writeStream.end()
+    }
+
+    return {
+        task,
+    }
+}
+
+class MarkdownLineParser {
+    logStream
+    writeStream
+    createWriteStream
+    parser = new MarkdownParser()
+    tick
+
+    constructor(options) {
+        Object.assign(this, options)
+    }
+
+    handleLine(line) {
+        const { logStream, writeStream } = this
+        // MD Parser
+        const resp = this.parser.parseLine(line)
+
+        this.tick(resp, line)
 
         if (isFile(resp)) {
             const path = resp.content
@@ -110,7 +143,7 @@ export async function runTaskStreaming(task = new Task, options = new TaskOption
             logStream.write(`<!-- Writing to: ${toPath} -->\n`)
 
             // Update writeStream
-            writeStream = createWriteStream(toPath)
+            this.writeStream = this.createWriteStream(toPath)
         }
 
         if (resp.type === 'codeBlockLine') {
@@ -121,40 +154,20 @@ export async function runTaskStreaming(task = new Task, options = new TaskOption
         }
 
         if (resp.type === 'codeBlockEnd') {
-            writeStream = null
+            this.writeStream = null
         }
-
     }
 
-    let buffer = ''
-    let result = '';
-    for await (const textPart of textStream) {
-        logStream.write(textPart)
+    parse(buffer) {
+        //  line parser
+        let newlineIndex
+        while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, newlineIndex)
+            buffer = buffer.slice(newlineIndex + 1)
 
-        buffer += textPart
-
-        result +=  parser.parse('message_1', buffer)
-        process.stdout.write(textPart)
-        // console.log(resp)
-        // MD Parser
-        // const resp = parser.parseLine(line)
-
-        // Old line parser
-        // let newlineIndex
-        // while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
-        //     const line = buffer.slice(0, newlineIndex)
-        //     buffer = buffer.slice(newlineIndex + 1)
-
-        //     handleLine(`${line}`)
-        // }
-    }
-
-    if (writeStream) {
-        writeStream.end()
-    }
-
-    return {
-        task,
+            this.handleLine(`${line}`)
+        }
+        return buffer
     }
 }
 
