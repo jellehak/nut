@@ -1,22 +1,16 @@
 import fs from 'node:fs'
 import { streamText } from "ai"
-import { MarkdownParser } from "./parser.js"
-import _colors from "ansi-colors"
+import { MarkdownParser } from "./parsers/md/parser.js"
 import { createOllama } from 'ollama-ai-provider'
 import { openai } from '@ai-sdk/openai';
+import { StreamingMessageParser } from './parsers/xml/message-parser.js'
 
-const model = openai('o1-mini')
+const ollama = createOllama()
 
-function loadFileContent(file = '') {
-    return {
-        file,
-        content: fs.readFileSync(file, 'utf8')
-    }
-}
 export class Task {
     prompt = ''
-    intend = ''
     files = []
+    systemPrompt = ''
 
     constructor(obj = {}) {
         Object.assign(this, obj)
@@ -52,43 +46,17 @@ export function createDeepPath(toPath = '') {
     }
 }
 
-export function createOllamaModel(options = {}) {
-    // Set Model
-    const ollama = createOllama({
-        // Add custom fetch to allow larger context window
-        fetch: async (url, options) => {
-            const body = JSON.parse(options.body)
-            body.options['num_ctx'] = 32 * 1024
-            options.body = JSON.stringify(body)
-            const result = await fetch(url, options)
-            return result
-        },
-    })
-    return ollama(options.model)
-}
+export class TaskOptions {
+    logStream = { write: (str = '') => { } }
+    model = ollama('llama3.1')
+    multibar = {}
+    tick = function (ctx, raw) { }
+    output = ''
+    parser = new MarkdownParser()
+    createWriteStream = fs.createWriteStream
 
-function renderFile({ file = '', content = '' }) {
-    const extension = file.split('.').pop()
-
-    return `***${file}***
-\`\`\`${extension}
-${content}
-\`\`\``
-}
-
-const ollama = createOllama()
-const OPTIONS = {
-    logStream: { write: (str = '') => { } },
-    model: ollama('llama3.1'),
-    multibar: {},
-    tick: (ctx, raw) => { },
-    output: '',
-    createWriteStream: fs.createWriteStream
-}
-
-export async function runTasksInSeries(tasks = []) {
-    for (const fn of tasks) {
-        await fn()
+    constructor(obj = {}) {
+        Object.assign(this, obj)
     }
 }
 
@@ -98,42 +66,41 @@ export async function runTasksInSeries(tasks = []) {
  * @param {*} options 
  * @returns 
  */
-export async function runTaskStreaming(task = {}, options = OPTIONS) {
+export async function runTaskStreaming(task = new Task, options = new TaskOptions) {
     const {
         logStream,
         tick,
         model,
-        // output,
+        parser,
         createWriteStream
-    } = { ...OPTIONS, ...options }
+    } = { ...new TaskOptions, ...options }
 
-    // Context loader
-    // const context = taskContextLoader(task)
-
-    const { prompt } = createPrompt(task)
+    const prompt = task.prompt
 
     logStream.write(`## Prompt\n${prompt}\n\n\n`)
 
-    // TODO catch errors
-    const { textStream } = streamText({
+    const config = {
         model,
+        system: task.systemPrompt,
         prompt,
         maxRetries: 1
-    })
+    }
+    const { textStream } = streamText(config)
 
     let writeStream = null
-    const parser = new MarkdownParser()
 
     logStream.write(`## Response\n`)
 
     function handleLine(line = '') {
-        const resp = parser.parseLine(line)
+        // Test XML parser
+        const resp = parser.parse('message_1', line)
+        // console.log({line, resp})
+        // MD Parser
+        // const resp = parser.parseLine(line)
 
         tick(resp, line)
 
-        const isFile = resp.type === 'boldItalic' && resp.content.includes('.')
-        // console.log(resp)
-        if (isFile) {
+        if (isFile(resp)) {
             const path = resp.content
             const toPath = `${path}`
 
@@ -160,18 +127,26 @@ export async function runTaskStreaming(task = {}, options = OPTIONS) {
     }
 
     let buffer = ''
+    let result = '';
     for await (const textPart of textStream) {
         logStream.write(textPart)
 
         buffer += textPart
 
-        let newlineIndex
-        while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.slice(0, newlineIndex)
-            buffer = buffer.slice(newlineIndex + 1)
+        result +=  parser.parse('message_1', buffer)
+        process.stdout.write(textPart)
+        // console.log(resp)
+        // MD Parser
+        // const resp = parser.parseLine(line)
 
-            handleLine(`${line}`)
-        }
+        // Old line parser
+        // let newlineIndex
+        // while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+        //     const line = buffer.slice(0, newlineIndex)
+        //     buffer = buffer.slice(newlineIndex + 1)
+
+        //     handleLine(`${line}`)
+        // }
     }
 
     if (writeStream) {
@@ -183,10 +158,19 @@ export async function runTaskStreaming(task = {}, options = OPTIONS) {
     }
 }
 
+function loadFileContent(file = '') {
+    return {
+        file,
+        content: fs.readFileSync(file, 'utf8')
+    }
+}
+
+const isFile = ctx => ['strong','boldItalic'].includes(ctx.type) && ctx.content.includes('.')
+
 export function createChatHandler(stream) {
     return (ctx) => {
         if (ctx.type === 'paragraph') {
-            stream.write(`\t${ctx.content}\n`)
+            stream.write(`${ctx.content}\n`)
             return
         }
         if (ctx.type === 'codeBlockLine') {
@@ -198,8 +182,7 @@ export function createChatHandler(stream) {
             return
         }
     
-        const isFile = ctx.type === 'strong' && ctx.content.includes('.')
-        if (isFile) {
+        if (isFile(ctx)) {
             stream.write(ctx.content)
             return
         }
@@ -207,5 +190,36 @@ export function createChatHandler(stream) {
         if (ctx.content) {
             stream.write(`${ctx.content || ''}\n`)
         }
+    }
+}
+
+export function createOllamaModel(options = {}) {
+    // Set Model
+    const ollama = createOllama({
+        // Add custom fetch to allow larger context window
+        fetch: async (url, options) => {
+            const body = JSON.parse(options.body)
+            body.options['num_ctx'] = 32 * 1024
+            options.body = JSON.stringify(body)
+            const result = await fetch(url, options)
+            return result
+        },
+    })
+    return ollama(options.model || 'llama3.1')
+}
+
+function renderFile({ file = '', content = '' }) {
+    const extension = file.split('.').pop()
+
+    return `***${file}***
+\`\`\`${extension}
+${content}
+\`\`\``
+}
+
+
+export async function runTasksInSeries(tasks = []) {
+    for (const fn of tasks) {
+        await fn()
     }
 }
